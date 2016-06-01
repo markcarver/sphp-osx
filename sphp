@@ -1,57 +1,127 @@
 #!/bin/bash
 
+# Check if command was ran as root.
+if [[ $(id -u) -eq 0 ]]; then
+    echo "The command \"sphp\" should not be executed as root or via sudo directly."
+    echo "When a service requires root access, you will be prompted for a password as needed."
+    exit 1
+fi
+
+# Usage
 if [ $# -ne 1 ]; then
 	echo "Usage: sphp [phpversion]"
 	exit 1
 fi
 
-currentversion="`php -r \"error_reporting(0); echo str_replace('.', '', substr(phpversion(), 0, 3));\"`"
-newversion="$1"
+# Retrieve the extrapolated path (if symlinked) for where this command lives.
+SPHP_PATH=$(cd $(dirname $(readlink $0 || echo $0)) && pwd -P)
 
-shortOld="`php -r \"error_reporting(0); echo substr(phpversion(), 0, 1);\"`"
-shortNew="`php -r \"error_reporting(0); echo substr('$1', 0, 1);\"`"
+# Determine where Apache is being served from on the local machine.
+function sphp_get_apache_type {
+  [ `serverinfo -q --configured > /dev/null 2>&1 && echo $?` -eq 0 ]         && echo "server"    && return
+  [ `pgrep -f /usr/local/Cellar/*/httpd > /dev/null 2>&1 && echo $?` -eq 0 ] && echo "homebrew"  && return
+  [ `pgrep -f /usr/sbin/httpd > /dev/null 2>&1 && echo $?` -eq 0 ]           && echo "system"    && return
+  [ `pgrep -x httpd > /dev/null 2>&1 && echo $?` -eq 0 ]                     && echo "unknown"   && return
+}
+SPHP_APACHE_TYPE=`sphp_get_apache_type`
 
-brew list php$newversion 2> /dev/null > /dev/null
+# Determine the approriate Apache configuration directory path.
+SPHP_APACHE_CONFIG_PATH=${SPHP_APACHE_CONFIG_PATH:"/etc/apache2"};
+[ "${SPHP_APACHE_TYPE}" == "server" ] && SPHP_APACHE_CONFIG_PATH="/Library/Server/Web/Config/apache2"
+SPHP_APACHE_CONFIG_OTHER_PATH=${SPHP_APACHE_OTHER_PATH:="other"}
 
-if [ $? -eq 0 ]; then
-	echo "PHP version $newversion found"
+SPHP_CURRENT_VERSION=`php -r "error_reporting(0); echo str_replace('.', '', substr(phpversion(), 0, 3));"`
+SPHP_NEW_VERSION="${1}"
+SPHP_MAJOR_VERSION=${SPHP_NEW_VERSION:0:1}
+SPHP_MINOR_VERSION=${SPHP_NEW_VERSION:1:1}
 
-	echo "Unlinking old binaries..."
-	brew unlink php$currentversion 2> /dev/null > /dev/null
+brew list php${SPHP_NEW_VERSION} 2> /dev/null > /dev/null
 
-	echo "Linking new binaries..."
-	brew link php$newversion
+if [ $? -eq 0 ]; then  
+  # Check if new version is already the current version.
+  if [ "${SPHP_NEW_VERSION}" == "${SPHP_CURRENT_VERSION}" ]; then
+    echo -n "PHP version ${SPHP_MAJOR_VERSION}.${SPHP_MINOR_VERSION} is already being used. Continue by reloading? (y/n) "
+    while true; do
+        read -n 1 yn
+        case $yn in
+            [Yy]* ) echo && break;;
+            [Nn]* ) exit 1;;
+        esac
+    done
+  fi
+  
+  # Stop Apache service.
+  case ${SPHP_APACHE_TYPE} in
+    server)
+      echo 'Stopping OS X Server web service...'
+      sudo serveradmin stop web > /dev/null 2>&1
+      ;;
+    homebrew)
+      echo 'Stopping Homebrew Apache service...'
+      sudo /usr/local/bin/apachectl -k stop > /dev/null 2>&1 && sudo pkill -9 -f /usr/local/Cellar/*/httpd > /dev/null 2>&1
+      ;;
+    system)
+      echo 'Stopping system Apache service...'
+      sudo /usr/sbin/apachectl -k stop > /dev/null 2>&1 && sudo pkill -9 -f /usr/sbin/httpd > /dev/null 2>&1
+      ;;
+    *)
+      echo 'Attempting to stop unknown Apache service...'
+      httpd -k restart > /dev/null 2>&1 && sudo killall httpd > /dev/null 2>&1
+      ;;
+  esac
+  
+  # Determine if PHP-FPM services should be started and stopped.
+  [ "${SPHP_FPM:=1}" == "1" ] && SPHP_BREW_SERVICES=`brew services list 2>/dev/null`
+  
+  # Stop current PHP-FPM service, if necessary.
+  if [ `echo ${SPHP_BREW_SERVICES} | grep php${SPHP_CURRENT_VERSION} > /dev/null 2>&1 && echo $? || echo 1` -eq 0 ]; then
+    echo "Stopping PHP-FPM ${SPHP_CURRENT_VERSION:0:1}.${SPHP_CURRENT_VERSION:1:1} service..."
+    sudo brew services stop php${SPHP_CURRENT_VERSION} > /dev/null 2>&1
+  fi
 
-	echo "Linking new modphp addon..."
-	sudo ln -sf `brew list php$newversion | grep libphp` /usr/local/lib/libphp${shortNew}.so
+	echo "Unlinking PHP ${SPHP_CURRENT_VERSION:0:1}.${SPHP_CURRENT_VERSION:1:1} binaries..."
+	brew unlink php${SPHP_CURRENT_VERSION} > /dev/null 2>&1
 
-	echo "Fixing LoadModule..."
-	apacheConf=`httpd -V | grep -i server_config_file | cut -d '"' -f 2`
-	sudo sed -i -e "/LoadModule php${shortOld}_module/s/^#*/#/" $apacheConf
-	sudo sed -i -e "/LoadModule php${shortNew}_module/s/^#//" $apacheConf
+	echo "Linking PHP ${SPHP_MAJOR_VERSION}.${SPHP_MINOR_VERSION} binaries..."
+	brew link php${SPHP_NEW_VERSION} > /dev/null 2>&1
+  
+	echo "Linking Apache libphp${SPHP_NEW_VERSION}.so module..."
+	sudo ln -sf `brew list php${SPHP_NEW_VERSION} | grep libphp` /usr/local/lib/libphp${SPHP_MAJOR_VERSION}.so > /dev/null 2>&1
 
-	echo "Updating version file..."
+	echo "Linking Apache PHP ${SPHP_MAJOR_VERSION} configuration file..."
+  sudo ln -sf "${SPHP_PATH}/php${SPHP_MAJOR_VERSION}.conf" "${SPHP_APACHE_CONFIG_PATH}/${SPHP_APACHE_CONFIG_OTHER_PATH}/sphp.conf"
 
-	pgrep -f /usr/sbin/httpd 2> /dev/null > /dev/null
-	if [ $? -eq 0 ]; then
-		echo "Restarting system Apache..."
-		sudo pkill -9 -f /usr/sbin/httpd
-		sudo /usr/sbin/apachectl -k restart > /dev/null 2>&1
-	fi
-	pgrep -f /usr/local/Cellar/*/httpd 2> /dev/null > /dev/null
-	if [ $? -eq 0 ]; then
-		echo "Restarting homebrew Apache..."
-		sudo pkill -9 -f /usr/local/Cellar/*/httpd
-		sudo /usr/local/bin/apachectl -k restart > /dev/null 2>&1
-	fi
-	pgrep -x httpd 2> /dev/null > /dev/null
-	if [ $? -eq 0 ]; then
-		echo "Restarting non-root homebrew Apache..."
-		httpd -k restart > /dev/null 2>&1
-	fi
+  # Start new PHP-FPM service, if necessary.
+  if [ `echo ${SPHP_BREW_SERVICES} | grep php${SPHP_NEW_VERSION} > /dev/null 2>&1 && echo $? || echo 1` -eq 0 ]; then
+    echo "Starting PHP-FPM ${SPHP_MAJOR_VERSION}.${SPHP_MINOR_VERSION} service..."
+    sudo brew services start php${SPHP_NEW_VERSION} > /dev/null 2>&1
+  fi
 
-	echo "Done."
+  # Start Apache service.
+  case ${SPHP_APACHE_TYPE} in
+    server)
+      echo 'Starting OS X Server web service...'
+      sudo serveradmin start web > /dev/null 2>&1
+      ;;
+    homebrew)
+      echo 'Starting Homebrew Apache service...'
+      sudo /usr/local/bin/apachectl -k start > /dev/null 2>&1
+      ;;
+    system)
+      echo 'Starting system Apache service...'
+      sudo /usr/sbin/apachectl -k start > /dev/null 2>&1
+      ;;
+    *)
+      echo 'Attempting to start unknown Apache service...'
+      httpd -k start > /dev/null 2>&1
+      ;;
+  esac
+  
+  # Show PHP CLI version for verification.
+	echo && php -v
+  
 else
-	echo "PHP version $newversion was not found."
+	echo "PHP version ${SPHP_MAJOR_VERSION}.${SPHP_MINOR_VERSION} is not installed."
+  echo "Try \`brew install php${SPHP_NEW_VERSION}\` first."
 	exit 1
 fi
