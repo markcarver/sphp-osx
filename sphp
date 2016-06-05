@@ -18,15 +18,15 @@ SPHP_PATH=$(cd $(dirname $(readlink $0 || echo $0)) && pwd -P)
 
 # Determine where Apache is being served from on the local machine.
 function sphp_get_apache_type {
-  [ `serverinfo -q --configured > /dev/null 2>&1 && echo $?` -eq 0 ]         && echo "server"    && return
-  [ `pgrep -f /usr/local/Cellar/*/httpd > /dev/null 2>&1 && echo $?` -eq 0 ] && echo "homebrew"  && return
-  [ `pgrep -f /usr/sbin/httpd > /dev/null 2>&1 && echo $?` -eq 0 ]           && echo "system"    && return
-  [ `pgrep -x httpd > /dev/null 2>&1 && echo $?` -eq 0 ]                     && echo "unknown"   && return
+  [ `serverinfo -q --configured > /dev/null 2>&1; echo $?` -eq 0 ]         && echo "server"    && return
+  [ `pgrep -f /usr/local/Cellar/*/httpd > /dev/null 2>&1; echo $?` -eq 0 ] && echo "homebrew"  && return
+  [ `pgrep -f /usr/sbin/httpd > /dev/null 2>&1; echo $?` -eq 0 ]           && echo "system"    && return
+  [ `pgrep -x httpd > /dev/null 2>&1; echo $?` -eq 0 ]                     && echo "unknown"   && return
 }
 SPHP_APACHE_TYPE=`sphp_get_apache_type`
 
 # Determine the approriate Apache configuration directory path.
-SPHP_APACHE_CONFIG_PATH=${SPHP_APACHE_CONFIG_PATH:"/etc/apache2"};
+SPHP_APACHE_CONFIG_PATH=${SPHP_APACHE_CONFIG_PATH:="/etc/apache2"};
 [ "${SPHP_APACHE_TYPE}" == "server" ] && SPHP_APACHE_CONFIG_PATH="/Library/Server/Web/Config/apache2"
 SPHP_APACHE_CONFIG_OTHER_PATH=${SPHP_APACHE_OTHER_PATH:="other"}
 
@@ -71,10 +71,10 @@ if [ $? -eq 0 ]; then
   esac
   
   # Determine if PHP-FPM services should be started and stopped.
-  [ "${SPHP_FPM:=1}" == "1" ] && SPHP_BREW_SERVICES=`brew services list 2>/dev/null`
+  [ "${SPHP_FPM:=0}" == "1" ] && SPHP_BREW_SERVICES=`brew services list 2>/dev/null`
   
   # Stop current PHP-FPM service, if necessary.
-  if [ `echo ${SPHP_BREW_SERVICES} | grep php${SPHP_CURRENT_VERSION} > /dev/null 2>&1 && echo $? || echo 1` -eq 0 ]; then
+  if [ `echo ${SPHP_BREW_SERVICES} | grep php${SPHP_CURRENT_VERSION} > /dev/null 2>&1; echo $? || echo 1` -eq 0 ]; then
     echo "Stopping PHP-FPM ${SPHP_CURRENT_VERSION:0:1}.${SPHP_CURRENT_VERSION:1:1} service..."
     sudo brew services stop php${SPHP_CURRENT_VERSION} > /dev/null 2>&1
   fi
@@ -92,7 +92,7 @@ if [ $? -eq 0 ]; then
   sudo ln -sf "${SPHP_PATH}/php${SPHP_MAJOR_VERSION}.conf" "${SPHP_APACHE_CONFIG_PATH}/${SPHP_APACHE_CONFIG_OTHER_PATH}/sphp.conf"
 
   # Start new PHP-FPM service, if necessary.
-  if [ `echo ${SPHP_BREW_SERVICES} | grep php${SPHP_NEW_VERSION} > /dev/null 2>&1 && echo $? || echo 1` -eq 0 ]; then
+  if [ `echo ${SPHP_BREW_SERVICES} | grep php${SPHP_NEW_VERSION} > /dev/null 2>&1; echo $? || echo 1` -eq 0 ]; then
     echo "Starting PHP-FPM ${SPHP_MAJOR_VERSION}.${SPHP_MINOR_VERSION} service..."
     sudo brew services start php${SPHP_NEW_VERSION} > /dev/null 2>&1
   fi
